@@ -1,182 +1,150 @@
 import numpy as np
 import pandas as pd
-import argparse
-import math
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
+import tensorflow as tf
+from tensorflow.keras.datasets import mnist
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.datasets import mnist
 
-def matrix_multiplication(a,b):
-    return np.matmul(a,b)
+(x_train, y_train), (x_test, y_test) = mnist.load_data()
 
-def predictions(output_array):
-    label = []
-    shape = output_array.shape
-    for column in range(shape[1]):
-        label.append(np.argmax(output_array[:,column]))
-    return label
+x_train = x_train.reshape(-1, 28 * 28).astype("float32") / 255.0
+x_test = x_test.reshape(-1, 28 * 28).astype("float32") / 255.0
 
-def gradient_preactivation(grad_act,pre_act):
-    shape = pre_act.shape
-    second_term = activation(pre_act) * (1- activation(pre_act))
-    return np.multiply(grad_act,pre_act)
+x_train = x_train[0:700,:]
+y_train = y_train[0:700]
+x_test = x_test[0:50,:]
+y_test = y_test[0:50]
+x_train_copy=x_train.copy()
+y_train_copy=y_train.copy()
 
-def grad_activation(weights,grad_pre_act):
-    weights = np.transpose(weights)
-    return matrix_multiplication(weights,grad_pre_act)
+num_hidden_layers = 3
+neuron_each_layer = [256,128,64]
+epochs = 50
+learning_rate = 0.0001
+pre_act = dict()
+act = dict()
+grad_pre_act=dict()
+grad_weights=dict()
+grad_biases=dict()
+grad_act=dict()
 
-def grad_biases(grad_pre_act):
-    shape_grad = grad_pre_act.shape
-    sum = np.zeros((shape_grad[0],1))
-    for row in range(0,shape_grad[0]):
-        sum[row] = np.sum(grad_pre_act[row,:])
-    return (sum/shape_grad[1])
+true_probabilities = np.zeros((10,x_train.shape[0]))
+for a in range(0,x_train.shape[0]):
+    true_probabilities[y_train[a],a] = 1
+
+def gradient_pre_activation(grad_act,pre_act):
+    for rows in range(pre_act.shape[0]):
+        for columns in range(pre_act.shape[1]):
+            if(pre_act[rows,columns]>=0):
+                pre_act[rows,columns]=1
+            else:
+                pre_act[rows,columns]=0
+    pre_act=pre_act.T
+    for columns in range(grad_act.shape[1]):
+        grad_act[:,columns]=np.multiply(grad_act[:,columns],pre_act[:,columns])
+    return grad_act
+   
+ def gradient_activation(weights_next_layer,grad_pre_act_next):
+    return np.matmul(weights_next_layer.T,grad_pre_act_next)
     
-def grad_weights(grad_pre_act,act):
-    shape_grad = grad_pre_act.shape
-    act = np.transpose(act)
-    shape_act = act.shape
-    sum = np.zeros((shape_grad[0],shape_act[1]))
-    for column in range(0,shape_grad[1]):
-        reshaped_grad = grad_pre_act[:,column].reshape(shape_grad[0],1)
-        reshaped_array = act[column,:].reshape(1,shape_act[1])
-        mltiply = (matrix_multiplication(reshaped_grad,reshaped_array))
-        sum = sum + mltiply
-    return (sum/shape_grad[1])
-
+def gradient_biases(grad_pre_act_current_layer):
+    sum = np.zeros((grad_pre_act_current_layer.shape[0],1))
+    for columns in range(grad_pre_act_current_layer.shape[1]):
+        sum = sum + grad_pre_act_current_layer[:,columns].reshape(grad_pre_act_current_layer.shape[0],-1)
+    return sum
+    
+def gradient_weights(grad_pre_act_current_layer,act_prev_layer):
+    sum=np.zeros((grad_pre_act_current_layer.shape[0],act_prev_layer.shape[1]))
+    for num_examples in range(grad_pre_act_current_layer.shape[1]):
+        sum = sum+np.matmul(grad_pre_act_current_layer[:,num_examples].reshape(-1,1),act_prev_layer[num_examples,:].reshape(1,-1))
+    return sum
+    
 def gradient_outermost_layer(e_l,y_hat):
-    return -(e_l - y_hat)
+    return (y_hat-e_l)
     
-def cross_entropy(y_hat,y_true):
-    loss =0
-    shape = y_true.shape
-    for columns in range(0, shape[1]):
-        for rows in range(0,shape[0]):
-            if y_true[rows,columns] == 1:
-                loss = loss + (-np.log(y_hat[rows,columns]))
-                break
+def crossentropy(y_predicted,y_true):
+    loss=0
+    for rows in range(y_true.shape[0]):
+        for columns in range(y_true.shape[1]):
+            if(y_true[rows][columns]==1):
+                loss =loss+(-math.log(y_predicted[rows][columns],2))
     return loss
-
-def softmax(x):
-    shape = x.shape
-    counter = 0
-    for column in range(0,shape[1]):
-        sum = 0
-        output_vector = []
-        sum = np.sum(np.exp(x[:,column] - np.max(x[:,column])))
-        output_vector.append(np.exp(x[:,column] - np.max(x[:,column]))/sum)
-
-        if counter == 0:
-            output_array_buffer = np.array(output_vector)
-            output_array_buffer = output_array_buffer.reshape((10,1))
-        else:
-            output_array_counter = np.array(output_vector)
-            output_array_counter = output_array_counter.reshape((10,1))
-            final_predictions = np.concatenate((output_array_buffer,output_array_counter),axis = 1)
-            output_array_buffer= final_predictions
-        counter = counter + 1
-    return final_predictions
-
-def pre_activation(weights,biases,x,count):
-    pre_act_layer_wise = dict()
-    pre_act_layer_wise[count] = matrix_multiplication(weights,x)
-    shape_x = x.shape
-    shape_bias = biases.shape
-    biases = biases.reshape(shape_bias[0])
-    for i in range(0,shape_x[1]):
-        pre_act_layer_wise[count][:,i] = pre_act_layer_wise[count][:,i] + biases
-    return pre_act_layer_wise[count]
-
-def activation(x):
-    shape = x.shape
-    for columns in range(0,shape[1]):
-        try:
-            x[:,columns] = 1.0 / (1 + np.exp(-x[:,columns]))
-        except:
-            continue
-    return x
     
-# Initialisation of Weights
-def initialise_weights_biases(n_hidden_layers,size_hidden_layer):
-    weights = dict()
-    biases = dict()
-
-    size_hidden_list = []
-    size_hidden_int = []
-    size_hidden_list = size_hidden_layer.split(',')
-
-    for i in range(0,n_hidden_layers):
-        size_hidden_int.append(int(size_hidden_list[i]))
-    size_hidden_int.append(10)
-    size_hidden_int.insert(0,100)
-
-    for j in range(1,n_hidden_layers+2):
-        np.random.seed(1234)
-        weights[j] = np.random.randn(size_hidden_int[j],size_hidden_int[j-1])* np.sqrt(2/(size_hidden_int[i] + size_hidden_int[i-1]))
-        biases[j] = np.random.randn(size_hidden_int[j],1)* np.sqrt(2/(size_hidden_int[i] + size_hidden_int[i-1]))
-
-    return weights,biases
-
-ap = argparse.ArgumentParser(description = 'Inputing Hyperparameters')
-ap.add_argument('--lr','--learning_rate',required = True,type = float)
-ap.add_argument('--num_hidden','--n_hidden_layers',required = True,type = int)
-ap.add_argument('--sizes','--size_hidden_layer',required = True,type = str)
-ap.add_argument('--epochs','--epochs',required = True,type = int)
-args = ap.parse_args()
-
-data = pd.read_csv('train.csv')
-x = data.iloc[0:100,1:101]
-y = data.iloc[0:100,-1]
-x = x.to_numpy()
-shape_x = x.shape
-x = np.transpose(x)
-y = y.to_numpy()
-true_probablities = np.zeros((10,shape_x[0]))
-for a in range(0,shape_x[0]):
-    true_probablities[y[a],a] = 1
-
-scaler = StandardScaler()
-scaled = scaler.fit_transform(x)
-pca = PCA(n_components = 100)
-pca.fit(scaled)
-scaled = pca.transform(scaled)
-new_x = scaled
-
-weights = dict()
-biases = dict()
-
-weights,biases = initialise_weights_biases(args.num_hidden,args.sizes)
-
-for t in range(0,args.epochs):
+def predictions(output_array):
+    labels=list()
+    for rows in range(output_array.shape[0]):
+        labels.append(np.argmax(output_array[rows,:]))
+    return labels
+    
+def softmax(pre_act_last_layer):
+    for rows in range(pre_act_last_layer.shape[0]):
+        sum = np.sum(np.exp(pre_act_last_layer[rows,:] - np.max(pre_act_last_layer[rows,:])))
+        pre_act_last_layer[rows,:] = np.exp(pre_act_last_layer[rows,:])/sum
+    return pre_act_last_layer
+    
+def activation(pre_act):
+    for i in range(pre_act.shape[0]):
+        for j in range(pre_act.shape[1]):
+            pre_act[i,j]=max(0,pre_act[i,j])
+    return pre_act
+    
+def pre_activation(weights,biases,x_train,i):
     pre_act = dict()
-    act = dict()
-    grad_pre_act = dict()
-    grad_wght = dict()
-    grad_bs = dict()
-    grad_act = dict()
-    act[0] = new_x
-    scaled = new_x
-    # Forward Propagation
-    for i in range(1,args.num_hidden+1):
-        pre_act[i] = pre_activation(weights[i],biases[i],scaled,i)
-        act[i] = activation(pre_act[i])
-        scaled = act[i]
-    pre_act[i+1] = pre_activation(weights[i+1],biases[i+1],scaled,i+1)
-    output_array = softmax(pre_act[i+1])
-    labels = predictions(output_array)
-    loss = cross_entropy(output_array,true_probablities)
+    pre_act[i] = np.matmul(x_train,weights.T)
+    pre_act[i]=pre_act[i]+biases[i].T
+    return pre_act[i]
+    
+def initialise_weights_biases(num_hidden_layers,neuron_each_layer):
+    weights=dict()
+    biases=dict()
+    neuron_each_layer.append(10)
+    neuron_each_layer.insert(0,784)
+    for i in range(1,num_hidden_layers+2):
+        weights[i] = np.random.randn(neuron_each_layer[i],neuron_each_layer[i-1])* np.sqrt(2/(neuron_each_layer[i] + neuron_each_layer[i-1]))
+        biases[i] = np.random.randn(neuron_each_layer[i],1)* np.sqrt(2/(neuron_each_layer[i] + neuron_each_layer[i-1]))
+    return weights,biases
+    
+weights,biases = initialise_weights_biases(num_hidden_layers,neuron_each_layer)
+act[0]=x_train.copy()
+x_test_copy=x_test.copy()
 
-#     #Gradient Calculations
-    grad_pre_act[args.num_hidden+1] = gradient_outermost_layer(true_probablities,output_array)
-    for layers in range(args.num_hidden+1,0,-1):
-        grad_wght[layers] = grad_weights(grad_pre_act[layers],act[layers-1])
-        grad_bs[layers] = grad_biases(grad_pre_act[layers])
-        if layers > 1:
-            grad_act[layers-1] = grad_activation(weights[layers],grad_pre_act[layers])
-            grad_pre_act[layers-1] = gradient_preactivation(grad_act[layers-1],pre_act[layers-1])
+for t in range(epochs):
+    x_train_copy=x_train.copy()
+    for i in range(1,num_hidden_layers+1):
+        pre_act[i] = pre_activation(weights[i],biases[i],x_train_copy,i)
+        act[i]=activation(pre_act[i])
+        x_train_copy=act[i]
+    pre_act[i+1] = pre_activation(weights[i+1],biases[i+1],x_train_copy,i+1)
+    output_array  = softmax(pre_act[i+1])
+    labels=predictions(output_array)
 
-#     #Update Parameters
-    for layer in range(args.num_hidden+1,0,-1):
-        weights[layer] = weights[layer] - args.lr * grad_wght[layer]
-        biases[layer] = biases[layer] - args.lr * grad_bs[layer]
+    # Gradient Calculations
+    grad_pre_act[num_hidden_layers+1]=gradient_outermost_layer(true_probabilities,output_array.T)
 
+    for layers in range(num_hidden_layers+1,0,-1):
+        grad_weights[layers]=gradient_weights(grad_pre_act[layers],act[layers-1])
+        grad_biases[layers]=gradient_biases(grad_pre_act[layers])
+        if layers>1:
+            grad_act[layers-1]=gradient_activation(weights[layers],grad_pre_act[layers])
+            grad_pre_act[layers-1]=gradient_pre_activation(grad_act[layers-1],pre_act[layers-1])
+    for layers in range(num_hidden_layers+1,0,-1):
+        weights[layers] = weights[layers] - learning_rate * grad_weights[layers]
+        biases[layers] = biases[layers] - learning_rate * grad_biases[layers]
+
+pre_act = dict()
+act = dict()
+for i in range(1,num_hidden_layers+1):
+    pre_act[i] = pre_activation(weights[i],biases[i],x_test_copy,i)
+
+    act[i]=activation(pre_act[i])
+    x_test_copy=act[i]
+    pre_act[i+1] = pre_activation(weights[i+1],biases[i+1],x_test_copy,i+1)
+    output_array  = softmax(pre_act[i+1])
+    labels=predictions(output_array)
+    
 print(labels)
+print(y_test)
+
+y_pred = np.array(labels)
+print(accuracy_score(y_test, y_pred))
